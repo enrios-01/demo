@@ -5,7 +5,7 @@ from io import BytesIO
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+
 from logic import ProcesadorLogico
 
 # ---------------------------
@@ -37,8 +37,14 @@ if "reporte_por_plan" not in st.session_state:
 if "df_preview" not in st.session_state:
     st.session_state.df_preview = None
 
-procesador: ProcesadorLogico = st.session_state.procesador
+# Agregar estados para la nueva funcionalidad
+if "archivos_cargados" not in st.session_state:
+    st.session_state.archivos_cargados = {}
 
+if "archivos_duplicados" not in st.session_state:
+    st.session_state.archivos_duplicados = {}
+
+procesador: ProcesadorLogico = st.session_state.procesador
 
 # ============================================================
 # Funciones que se conservan/adaptan desde InterfazGrafica
@@ -83,7 +89,6 @@ def construir_resumen_inicial():
             with st.expander("🧾 Resumen impositivo"):
                 st.json(imp)
 
-
 def combinar_datos_archivos():
     """
     (Conservada) Combina TODAS las operaciones de todos los resúmenes en un único DF
@@ -101,7 +106,6 @@ def combinar_datos_archivos():
     procesador.dataframe_operaciones = df_combinado.copy()
     st.session_state.df_combinado = df_combinado
     return df_combinado
-
 
 def pedir_porcentajes():
     """
@@ -145,7 +149,6 @@ def pedir_porcentajes():
     }
     return dicc
 
-
 def construir_vista_previa():
     """
     (Conservada) Construye una vista previa post-recalculo:
@@ -177,7 +180,6 @@ def construir_vista_previa():
         st.dataframe(resumen, use_container_width=True)
     else:
         st.success("✅ No se encontraron operaciones con errores.")
-
 
 def mostrar_resultados_recalculo():
     """
@@ -216,7 +218,6 @@ def mostrar_resultados_recalculo():
         with st.expander(f"🔎 Detalle de errores: {variante}"):
             st.dataframe(datos["detalle_errores"], use_container_width=True)
 
-
 def _crear_figura_pie_desde_df(df: pd.DataFrame):
     """
     Auxiliar para graficar distribución de planes (solo VTA) desde un DF.
@@ -232,7 +233,6 @@ def _crear_figura_pie_desde_df(df: pd.DataFrame):
     ax.set_title("Distribución de Planes (Ventas)")
     fig.tight_layout()
     return fig
-
 
 def actualizar_grafico_planes():
     """
@@ -251,7 +251,6 @@ def actualizar_grafico_planes():
         return
     st.pyplot(fig)
 
-
 def manejar_exportacion():
     """
     (Conservada) Exporta CSV/Excel/PDF usando la lógica del ProcesadorLogico.
@@ -261,7 +260,7 @@ def manejar_exportacion():
         st.warning("No hay resultados para exportar. Ejecutá el recálculo primero.")
         return
 
-    st.caption("Elegí el/los formatos y descargá los archivos generados.")
+    st.caption("Elegí el/los formatos and descargá los archivos generados.")
     col1, col2, col3 = st.columns(3)
     chk_csv = col1.checkbox("CSV", value=True)
     chk_xlsx = col2.checkbox("Excel", value=True)
@@ -303,7 +302,6 @@ def manejar_exportacion():
                     )
         st.success("Exportaciones listas ✅")
 
-
 def manejar_recalculo():
     """
     (Conservada) Orquesta el recálculo:
@@ -329,6 +327,196 @@ def manejar_recalculo():
     st.success("Recalculo completado ✅")
     construir_vista_previa()
 
+# ---------- NUEVAS FUNCIONALIDADES A IMPLEMENTAR ----------
+
+def manejar_carga_pdf_streamlit(uploaded_files):
+    """
+    Reemplazo completo de manejar_carga_pdf con detección de duplicados
+    """
+    for i, archivo in enumerate(uploaded_files):
+        with st.spinner(f"Procesando {archivo.name} ({i+1}/{len(uploaded_files)})..."):
+            # Extraer datos
+            df_ops = procesador.extraer_operaciones_del_pdf(archivo)
+            meta = procesador.extraer_metadatos_del_pdf(archivo)
+            
+            # Verificar duplicados por Tipo y Nº
+            tipo_numero = meta.get("tipo_numero", archivo.name)
+            duplicado = False
+            archivo_duplicado = None
+            
+            for ruta, datos in st.session_state.archivos_cargados.items():
+                if datos["metadatos"].get("tipo_numero") == tipo_numero and ruta != archivo.name:
+                    duplicado = True
+                    archivo_duplicado = ruta
+                    break
+            
+            if duplicado:
+                st.session_state.archivos_duplicados[archivo.name] = {
+                    "dataframe": df_ops,
+                    "metadatos": meta,
+                    "procesador": ProcesadorLogico(),
+                    "duplicado_de": archivo_duplicado
+                }
+                st.warning(f"Archivo duplicado detectado: {tipo_numero}")
+            else:
+                st.session_state.archivos_cargados[archivo.name] = {
+                    "dataframe": df_ops,
+                    "metadatos": meta,
+                    "procesador": procesador
+                }
+
+def mostrar_y_resolver_duplicados():
+    """
+    Interfaz para resolver conflictos de archivos duplicados
+    """
+    if not st.session_state.get("archivos_duplicados"):
+        return
+    
+    st.subheader("📝 Resolución de archivos duplicados")
+    
+    for archivo, datos in st.session_state.archivos_duplicados.items():
+        with st.expander(f"Conflicto: {archivo}"):
+            st.write(f"**Archivo:** {archivo}")
+            st.write(f"**Tipo y Nº:** {datos['metadatos'].get('tipo_numero', 'No identificado')}")
+            st.write(f"**Duplicado de:** {datos['duplicado_de']}")
+            
+            opcion = st.radio(
+                f"¿Qué deseas hacer con {archivo}?",
+                ["Reemplazar archivo existente", "Conservar ambos (cambiar Tipo y Nº)", "Descartar archivo nuevo"],
+                key=f"opcion_duplicado_{archivo}"
+            )
+            
+            if opcion == "Conservar ambos (cambiar Tipo y Nº)":
+                nuevo_tipo_numero = st.text_input(
+                    "Nuevo valor para Tipo y Nº:",
+                    value=datos["metadatos"].get("tipo_numero", ""),
+                    key=f"nuevo_tipo_{archivo}"
+                )
+                if st.button("Aplicar cambios", key=f"aplicar_{archivo}"):
+                    if nuevo_tipo_numero:
+                        datos["metadatos"]["tipo_numero"] = nuevo_tipo_numero
+                        st.session_state.archivos_cargados[archivo] = datos
+                        del st.session_state.archivos_duplicados[archivo]
+                        st.rerun()
+            
+            elif opcion == "Reemplazar archivo existente":
+                if st.button("Confirmar reemplazo", key=f"reemplazar_{archivo}"):
+                    del st.session_state.archivos_cargados[datos["duplicado_de"]]
+                    st.session_state.archivos_cargados[archivo] = datos
+                    del st.session_state.archivos_duplicados[archivo]
+                    st.rerun()
+            
+            elif opcion == "Descartar archivo nuevo":
+                if st.button("Confirmar descarte", key=f"descarte_{archivo}"):
+                    del st.session_state.archivos_duplicados[archivo]
+                    st.rerun()
+
+def mostrar_tabla_archivos():
+    """
+    Tabla con botones de acción usando Streamlit nativo (reemplazo de AgGrid)
+    """
+    if not st.session_state.get("archivos_cargados"):
+        st.info("No hay archivos cargados")
+        return
+    
+    # Preparar datos para la tabla
+    datos_tabla = []
+    archivos_a_eliminar = []
+    
+    for archivo, datos in st.session_state.archivos_cargados.items():
+        operaciones = len(datos["dataframe"]) if datos["dataframe"] is not None else 0
+        datos_tabla.append({
+            "Archivo": archivo,
+            "Tipo y Nº": datos["metadatos"].get("tipo_numero", "Sin identificar"),
+            "Operaciones": operaciones,
+            "Acciones": archivo
+        })
+    
+    # Mostrar tabla con Streamlit nativo
+    for i, fila in enumerate(datos_tabla):
+        col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
+        col1.write(fila["Archivo"])
+        col2.write(fila["Tipo y Nº"])
+        col3.write(f"{fila['Operaciones']:,}")
+        
+        # Botón de eliminar
+        if col4.button("🗑️", key=f"eliminar_{i}"):
+            archivos_a_eliminar.append(fila["Archivo"])
+    
+    # Eliminar archivos después de iterar
+    for archivo in archivos_a_eliminar:
+        if archivo in st.session_state.archivos_cargados:
+            del st.session_state.archivos_cargados[archivo]
+        st.rerun()
+
+def pedir_porcentajes_mejorado():
+    """
+    Versión mejorada con validación y previsualización
+    """
+    if not procesador.diccionario_porcentajes_originales:
+        st.info("No se detectaron configuraciones de plan. Combine archivos primero.")
+        return {}
+    
+    data = []
+    for variante, vals in procesador.diccionario_porcentajes_originales.items():
+        data.append({
+            "variante_plan": variante,
+            "arancel_original": float(vals.get("arancel", 0)),
+            "interes_original": float(vals.get("interes", 0)),
+            "bonificacion_original": float(vals.get("bonificacion", 0)),
+            "arancel_ajustado": float(vals.get("arancel", 0)),
+            "interes_ajustado": float(vals.get("interes", 0)),
+            "bonificacion_ajustado": float(vals.get("bonificacion", 0)),
+        })
+    
+    df = pd.DataFrame(data).sort_values("variante_plan").reset_index(drop=True)
+    
+    # Editor de porcentajes con columnas editables
+    st.markdown("### 📊 Configuración de porcentajes por plan")
+    st.caption("Edite las columnas 'ajustado' para modificar los porcentajes. Los cambios se aplicarán al recalcular.")
+    
+    # Configurar columnas editables
+    column_config = {
+        "variante_plan": st.column_config.TextColumn("Variante de Plan", width="large"),
+        "arancel_original": st.column_config.NumberColumn("Arancel Original (%)", format="%.2f", disabled=True),
+        "interes_original": st.column_config.NumberColumn("Interés Original (%)", format="%.2f", disabled=True),
+        "bonificacion_original": st.column_config.NumberColumn("Bonificación Original (%)", format="%.2f", disabled=True),
+        "arancel_ajustado": st.column_config.NumberColumn("Arancel Ajustado (%)", format="%.2f", min_value=0.0, max_value=100.0),
+        "interes_ajustado": st.column_config.NumberColumn("Interés Ajustado (%)", format="%.2f", min_value=0.0, max_value=100.0),
+        "bonificacion_ajustado": st.column_config.NumberColumn("Bonificación Ajustada (%)", format="%.2f", min_value=0.0, max_value=100.0),
+    }
+    
+    edited_df = st.data_editor(
+        df,
+        column_config=column_config,
+        num_rows="fixed",
+        use_container_width=True,
+        key="editor_porcentajes_mejorado"
+    )
+    
+    # Convertir a diccionario de porcentajes
+    nuevos_porcentajes = {}
+    for _, row in edited_df.iterrows():
+        nuevos_porcentajes[row["variante_plan"]] = {
+            "arancel": row["arancel_ajustado"],
+            "interes": row["interes_ajustado"],
+            "bonificacion": row["bonificacion_ajustado"]
+        }
+    
+    # Mostrar resumen de cambios
+    st.markdown("### 📈 Resumen de cambios")
+    for variante in nuevos_porcentajes:
+        original = next((item for item in data if item["variante_plan"] == variante), {})
+        if original:
+            cambios = []
+            for campo in ["arancel", "interes", "bonificacion"]:
+                if original[f"{campo}_original"] != nuevos_porcentajes[variante][campo]:
+                    cambios.append(f"{campo}: {original[f'{campo}_original']}% → {nuevos_porcentajes[variante][campo]}%")
+            
+            if cambios:
+                st.info(f"**{variante}**: {' | '.join(cambios)}")
+    
+    return nuevos_porcentajes
 
 # ============================================================
 # Interfaz (layout Streamlit)
@@ -338,7 +526,8 @@ with st.sidebar:
     st.header("⚙️ Acciones")
     if st.button("🧹 Limpiar todo"):
         st.session_state.clear()
-        st.experimental_rerun()
+        st.session_state.procesador = ProcesadorLogico()
+        st.rerun()
 
     st.markdown("---")
     st.caption("Subí uno o más PDFs del resumen de Tarjeta Naranja.")
@@ -351,35 +540,18 @@ uploaded_files = st.file_uploader(
 
 # Cargar PDFs
 if uploaded_files:
-    with st.spinner("Procesando PDFs…"):
-        for archivo in uploaded_files:
-            # Extraer datos
-            df_ops = procesador.extraer_operaciones_del_pdf(archivo)
-            meta = procesador.extraer_metadatos_del_pdf(archivo)
-
-            # Determinar clave única (Tipo y Nº o nombre de archivo)
-            base_key = meta.get("tipo_numero", archivo.name).strip() or archivo.name
-            key = base_key
-            idx = 2
-            while key in procesador.operaciones_por_resumen:
-                key = f"{base_key} ({idx})"
-                idx += 1
-
-            # Guardar en estructuras por-resumen
-            procesador.operaciones_por_resumen[key] = df_ops.copy()
-            procesador.metadatos_por_resumen[key] = meta
-            procesador.resumen_impositivo_por_resumen[key] = procesador.resumen_impositivo
-
-    st.success("Carga finalizada ✅")
+    manejar_carga_pdf_streamlit(uploaded_files)
+    mostrar_y_resolver_duplicados()
 
 # Tabs principales
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📋 Resumen inicial",
-    "🧩 Combinar & Detectar",
+    "🧩 Combinar & Detectar", 
     "⚙️ Configuración",
     "🔄 Recalcular & Errores",
     "📈 Gráfico",
     "💾 Exportar",
+    "📁 Archivos Cargados"  # Nueva pestaña
 ])
 
 # --- TAB 1: Resumen inicial
@@ -454,209 +626,7 @@ with tab6:
     st.subheader("Exportación de resultados")
     manejar_exportacion()
 
-
-# ---------- NUEVAS FUNCIONALIDADES A IMPLEMENTAR ----------
-
-def manejar_carga_pdf_streamlit(uploaded_files):
-    """
-    Reemplazo completo de manejar_carga_pdf con detección de duplicados
-    """
-    if "archivos_cargados" not in st.session_state:
-        st.session_state.archivos_cargados = {}
-    
-    if "archivos_duplicados" not in st.session_state:
-        st.session_state.archivos_duplicados = {}
-    
-    for i, archivo in enumerate(uploaded_files):
-        with st.spinner(f"Procesando {archivo.name} ({i+1}/{len(uploaded_files)})..."):
-            # Extraer datos
-            df_ops = procesador.extraer_operaciones_del_pdf(archivo)
-            meta = procesador.extraer_metadatos_del_pdf(archivo)
-            
-            # Verificar duplicados por Tipo y Nº
-            tipo_numero = meta.get("tipo_numero", archivo.name)
-            duplicado = False
-            archivo_duplicado = None
-            
-            for ruta, datos in st.session_state.archivos_cargados.items():
-                if datos["metadatos"].get("tipo_numero") == tipo_numero and ruta != archivo.name:
-                    duplicado = True
-                    archivo_duplicado = ruta
-                    break
-            
-            if duplicado:
-                st.session_state.archivos_duplicados[archivo.name] = {
-                    "dataframe": df_ops,
-                    "metadatos": meta,
-                    "procesador": ProcesadorLogico(),  # Nuevo procesador para este archivo
-                    "duplicado_de": archivo_duplicado
-                }
-                st.warning(f"Archivo duplicado detectado: {tipo_numero}")
-            else:
-                st.session_state.archivos_cargados[archivo.name] = {
-                    "dataframe": df_ops,
-                    "metadatos": meta,
-                    "procesador": procesador  # Usar el procesador principal
-                }
-
-def mostrar_y_resolver_duplicados():
-    """
-    Interfaz para resolver conflictos de archivos duplicados
-    """
-    if not st.session_state.get("archivos_duplicados"):
-        return
-    
-    st.subheader("📝 Resolución de archivos duplicados")
-    
-    for archivo, datos in st.session_state.archivos_duplicados.items():
-        with st.expander(f"Conflicto: {archivo}"):
-            st.write(f"**Archivo:** {archivo}")
-            st.write(f"**Tipo y Nº:** {datos['metadatos'].get('tipo_numero', 'No identificado')}")
-            st.write(f"**Duplicado de:** {datos['duplicado_de']}")
-            
-            opcion = st.radio(
-                f"¿Qué deseas hacer con {archivo}?",
-                ["Reemplazar archivo existente", "Conservar ambos (cambiar Tipo y Nº)", "Descartar archivo nuevo"],
-                key=f"opcion_duplicado_{archivo}"
-            )
-            
-            if opcion == "Conservar ambos (cambiar Tipo y Nº)":
-                nuevo_tipo_numero = st.text_input(
-                    "Nuevo valor para Tipo y Nº:",
-                    value=datos["metadatos"].get("tipo_numero", ""),
-                    key=f"nuevo_tipo_{archivo}"
-                )
-                if st.button("Aplicar cambios", key=f"aplicar_{archivo}"):
-                    if nuevo_tipo_numero:
-                        datos["metadatos"]["tipo_numero"] = nuevo_tipo_numero
-                        st.session_state.archivos_cargados[archivo] = datos
-                        del st.session_state.archivos_duplicados[archivo]
-                        st.rerun()
-            
-            elif opcion == "Reemplazar archivo existente":
-                if st.button("Confirmar reemplazo", key=f"reemplazar_{archivo}"):
-                    # Eliminar el existente y agregar el nuevo
-                    del st.session_state.archivos_cargados[datos["duplicado_de"]]
-                    st.session_state.archivos_cargados[archivo] = datos
-                    del st.session_state.archivos_duplicados[archivo]
-                    st.rerun()
-            
-            elif opcion == "Descartar archivo nuevo":
-                if st.button("Confirmar descarte", key=f"descarte_{archivo}"):
-                    del st.session_state.archivos_duplicados[archivo]
-                    st.rerun()
-
-def mostrar_tabla_archivos():
-    """
-    Tabla interactiva de archivos cargados con acciones
-    """
-    if not st.session_state.get("archivos_cargados"):
-        st.info("No hay archivos cargados")
-        return
-    
-    # Preparar datos para la tabla
-    datos_tabla = []
-    for archivo, datos in st.session_state.archivos_cargados.items():
-        operaciones = len(datos["dataframe"]) if datos["dataframe"] is not None else 0
-        datos_tabla.append({
-            "Archivo": archivo,
-            "Tipo y Nº": datos["metadatos"].get("tipo_numero", "Sin identificar"),
-            "Operaciones": operaciones,
-            "Acciones": archivo  # Identificador para acciones
-        })
-    
-    df = pd.DataFrame(datos_tabla)
-    
-    # Usar aggrid para tabla interactiva con botones
-    gb = GridOptionsBuilder.from_dataframe(df)
-    gb.configure_column("Acciones", header_name="Acciones", cellRenderer=JsCode('''
-        function(params) {
-            return '<button onclick="alert(\'Eliminar ' + params.value + '\')">Eliminar</button>'
-        }
-    '''))
-    
-    grid_options = gb.build()
-    grid_response = AgGrid(
-        df,
-        gridOptions=grid_options,
-        height=200,
-        width="100%",
-        theme="streamlit",
-        allow_unsafe_jscode=True
-    )
-    
-    # Manejar acciones (simplificado - en realidad necesitarías más lógica JS)
-    if grid_response['selected_rows']:
-        st.write("Acción seleccionada para:", grid_response['selected_rows'])
-
-# ---------- MEJORAS A LAS FUNCIONES EXISTENTES ----------
-
-def pedir_porcentajes_mejorado():
-    """
-    Versión mejorada con validación y previsualización
-    """
-    if not procesador.diccionario_porcentajes_originales:
-        st.info("No se detectaron configuraciones de plan. Combine archivos primero.")
-        return {}
-    
-    data = []
-    for variante, vals in procesador.diccionario_porcentajes_originales.items():
-        data.append({
-            "variante_plan": variante,
-            "arancel_original": float(vals.get("arancel", 0)),
-            "interes_original": float(vals.get("interes", 0)),
-            "bonificacion_original": float(vals.get("bonificacion", 0)),
-            "arancel_ajustado": float(vals.get("arancel", 0)),
-            "interes_ajustado": float(vals.get("interes", 0)),
-            "bonificacion_ajustado": float(vals.get("bonificacion", 0)),
-        })
-    
-    df = pd.DataFrame(data).sort_values("variante_plan").reset_index(drop=True)
-    
-    # Editor de porcentajes con columnas editables
-    st.markdown("### 📊 Configuración de porcentajes por plan")
-    st.caption("Edite las columnas 'ajustado' para modificar los porcentajes. Los cambios se aplicarán al recalcular.")
-    
-    # Configurar columnas editables
-    column_config = {
-        "variante_plan": st.column_config.TextColumn("Variante de Plan", width="large"),
-        "arancel_original": st.column_config.NumberColumn("Arancel Original (%)", format="%.2f", disabled=True),
-        "interes_original": st.column_config.NumberColumn("Interés Original (%)", format="%.2f", disabled=True),
-        "bonificacion_original": st.column_config.NumberColumn("Bonificación Original (%)", format="%.2f", disabled=True),
-        "arancel_ajustado": st.column_config.NumberColumn("Arancel Ajustado (%)", format="%.2f", min_value=0.0, max_value=100.0),
-        "interes_ajustado": st.column_config.NumberColumn("Interés Ajustado (%)", format="%.2f", min_value=0.0, max_value=100.0),
-        "bonificacion_ajustado": st.column_config.NumberColumn("Bonificación Ajustada (%)", format="%.2f", min_value=0.0, max_value=100.0),
-    }
-    
-    edited_df = st.data_editor(
-        df,
-        column_config=column_config,
-        num_rows="fixed",
-        use_container_width=True,
-        key="editor_porcentajes_mejorado"
-    )
-    
-    # Convertir a diccionario de porcentajes
-    nuevos_porcentajes = {}
-    for _, row in edited_df.iterrows():
-        nuevos_porcentajes[row["variante_plan"]] = {
-            "arancel": row["arancel_ajustado"],
-            "interes": row["interes_ajustado"],
-            "bonificacion": row["bonificacion_ajustado"]
-        }
-    
-    # Mostrar resumen de cambios
-    st.markdown("### 📈 Resumen de cambios")
-    for variante in nuevos_porcentajes:
-        original = next((item for item in data if item["variante_plan"] == variante), {})
-        if original:
-            cambios = []
-            for campo in ["arancel", "interes", "bonificacion"]:
-                if original[f"{campo}_original"] != nuevos_porcentajes[variante][campo]:
-                    cambios.append(f"{campo}: {original[f'{campo}_original']}% → {nuevos_porcentajes[variante][campo]}%")
-            
-            if cambios:
-                st.info(f"**{variante}**: {' | '.join(cambios)}")
-    
-
-    return nuevos_porcentajes
+# --- TAB 7: Archivos Cargados (nueva pestaña)
+with tab7:
+    st.subheader("📁 Archivos Cargados")
+    mostrar_tabla_archivos()
