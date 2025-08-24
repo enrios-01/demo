@@ -5,7 +5,7 @@ from io import BytesIO
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-
+from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
 from logic import ProcesadorLogico
 
 # ---------------------------
@@ -658,4 +658,5 @@ def pedir_porcentajes_mejorado():
             if cambios:
                 st.info(f"**{variante}**: {' | '.join(cambios)}")
     
+
     return nuevos_porcentajes
