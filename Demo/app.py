@@ -7,7 +7,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from logic import ProcesadorLogico
-from st_aggrid import GridOptionsBuilder, AgGrid, JsCode
 
 # ---------------------------
 # Configuración general
@@ -339,7 +338,7 @@ with st.sidebar:
     st.header("⚙️ Acciones")
     if st.button("🧹 Limpiar todo"):
         st.session_state.clear()
-        st.rerun()
+        st.experimental_rerun()
 
     st.markdown("---")
     st.caption("Subí uno o más PDFs del resumen de Tarjeta Naranja.")
@@ -359,8 +358,7 @@ if uploaded_files:
             meta = procesador.extraer_metadatos_del_pdf(archivo)
 
             # Determinar clave única (Tipo y Nº o nombre de archivo)
-            tipo_numero_val = meta.get("tipo_numero")
-            base_key = (tipo_numero_val.strip() if tipo_numero_val else archivo.name) or archivo.name
+            base_key = meta.get("tipo_numero", archivo.name).strip() or archivo.name
             key = base_key
             idx = 2
             while key in procesador.operaciones_por_resumen:
