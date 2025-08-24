@@ -8,3 +8,6 @@ seaborn==0.13.0
 reportlab==4.0.8
 streamlit-aggrid==1.1.8
 python-decouple==3.8
+packaging==23.2
+pillow==10.2.0
+numpy==1.26.4
